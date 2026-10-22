@@ -1,0 +1,9 @@
+# Build output
+build/
+
+# ASIO SDK (downloaded separately; see README)
+third_party/
+
+# Local planning notes
+plan.md
+problem-specification.md
