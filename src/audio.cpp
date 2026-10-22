@@ -4,6 +4,7 @@
 #include <objbase.h>
 #include <avrt.h>
 #include <atomic>
+#include <climits>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -20,9 +21,10 @@ static AudioStatus g_status;
 
 // Driver state, owned by the worker. The callback reads it only while the stream runs.
 static IASIO* g_drv;
-static bool g_buffersCreated, g_started, g_outputReady;
-static ASIOBufferInfo g_bufs[4];  // in L, in R, out L, out R
-static long g_bufBytes;
+static const long kPcLoopbackFirst = 4;  // M4: inputs 5-6 are Loopback 1-2, the PC's playback on outs 1-2
+static bool g_buffersCreated, g_started, g_outputReady, g_mixPc;
+static ASIOBufferInfo g_bufs[6];  // in L, in R, out L, out R, PC L, PC R (PC only when mixing)
+static long g_bufBytes, g_bufSamples;
 static std::atomic<long> g_callbacks;
 
 static ASIOTime* onBufferSwitchTimeInfo(ASIOTime* t, long index, ASIOBool) {
@@ -35,8 +37,19 @@ static ASIOTime* onBufferSwitchTimeInfo(ASIOTime* t, long index, ASIOBool) {
     bool mute = g_mute.load(std::memory_order_relaxed);
     for (int c = 0; c < 2; c++) {
         void* dst = g_bufs[2 + c].buffers[index];
-        if (mute) memset(dst, 0, g_bufBytes);
-        else memcpy(dst, g_bufs[c].buffers[index], g_bufBytes);
+        if (mute) {
+            memset(dst, 0, g_bufBytes);
+        } else if (g_mixPc) {  // Int32 samples, checked at open; saturate instead of wrapping
+            const int* a = (const int*)g_bufs[c].buffers[index];
+            const int* b = (const int*)g_bufs[4 + c].buffers[index];
+            int* d = (int*)dst;
+            for (long i = 0; i < g_bufSamples; i++) {
+                long long s = (long long)a[i] + b[i];
+                d[i] = s > INT_MAX ? INT_MAX : s < INT_MIN ? INT_MIN : (int)s;
+            }
+        } else {
+            memcpy(dst, g_bufs[c].buffers[index], g_bufBytes);
+        }
     }
     if (g_outputReady) g_drv->outputReady();
     g_callbacks.fetch_add(1, std::memory_order_relaxed);
@@ -97,6 +110,10 @@ static std::string openDriver() {
         std::lock_guard<std::mutex> lock(g_mutex);
         cfg = g_cfg;
     }
+    if (cfg.mixPc && !mixPcAllowed(cfg)) {
+        appLog("not mixing PC audio: output is Out 1-2, which would feed back");
+        cfg.mixPc = false;
+    }
     CLSID clsid;
     if (!findClsid(cfg.driver, &clsid)) return "driver '" + cfg.driver + "' not installed";
     // ASIO quirk: the CLSID doubles as the IID.
@@ -126,18 +143,27 @@ static std::string openDriver() {
     }
     long bytesPerSample = inInfo.type == ASIOSTInt16LSB ? 2 : inInfo.type == ASIOSTInt24LSB ? 3
                         : inInfo.type == ASIOSTFloat64LSB ? 8 : 4;
+    if (cfg.mixPc) {
+        ASIOChannelInfo pcInfo = {kPcLoopbackFirst, ASIOTrue};
+        if (kPcLoopbackFirst + 1 >= numIn || g_drv->getChannelInfo(&pcInfo) != ASE_OK || pcInfo.type != ASIOSTInt32LSB ||
+            inInfo.type != ASIOSTInt32LSB) {
+            closeDriver();
+            return "PC audio mixing needs Int32 loopback channels 5-6";
+        }
+    }
 
-    for (int c = 0; c < 4; c++) {
-        g_bufs[c].isInput = c < 2;
-        g_bufs[c].channelNum = (c < 2 ? cfg.inFirst : cfg.outFirst) + c % 2;
+    long numChannels = cfg.mixPc ? 6 : 4;
+    for (int c = 0; c < numChannels; c++) {
+        g_bufs[c].isInput = c < 2 || c >= 4;
+        g_bufs[c].channelNum = (c < 2 ? cfg.inFirst : c < 4 ? cfg.outFirst : kPcLoopbackFirst) + c % 2;
     }
     long minSize, maxSize, prefSize, granularity;
     g_drv->getBufferSize(&minSize, &maxSize, &prefSize, &granularity);
     long bufSize = cfg.bufSize;
-    if (g_drv->createBuffers(g_bufs, 4, bufSize, &g_callbacksTable) != ASE_OK) {
+    if (g_drv->createBuffers(g_bufs, numChannels, bufSize, &g_callbacksTable) != ASE_OK) {
         appLog("buffer size %ld rejected, using driver default %ld", bufSize, prefSize);
         bufSize = prefSize;
-        if (g_drv->createBuffers(g_bufs, 4, bufSize, &g_callbacksTable) != ASE_OK) {
+        if (g_drv->createBuffers(g_bufs, numChannels, bufSize, &g_callbacksTable) != ASE_OK) {
             g_drv->getErrorMessage(msg);
             closeDriver();
             return std::string("createBuffers failed: ") + msg;
@@ -145,6 +171,8 @@ static std::string openDriver() {
     }
     g_buffersCreated = true;
     g_bufBytes = bufSize * bytesPerSample;
+    g_bufSamples = bufSize;
+    g_mixPc = cfg.mixPc;
     g_outputReady = g_drv->outputReady() == ASE_OK;
 
     ASIOSampleRate rate = 0;
@@ -160,9 +188,9 @@ static std::string openDriver() {
 
     std::lock_guard<std::mutex> lock(g_mutex);
     g_status = {true, numIn, numOut, bufSize, rate, rate > 0 ? (inLatency + outLatency) * 1000.0 / rate : 0};
-    appLog("running: in %ld-%ld -> out %ld-%ld, buffer %ld @ %.0f Hz, latency in %ld + out %ld samples = %.2f ms",
-           cfg.inFirst + 1, cfg.inFirst + 2, cfg.outFirst + 1, cfg.outFirst + 2, bufSize, rate, inLatency,
-           outLatency, g_status.latencyMs);
+    appLog("running: in %ld-%ld%s -> out %ld-%ld, buffer %ld @ %.0f Hz, latency in %ld + out %ld samples = %.2f ms",
+           cfg.inFirst + 1, cfg.inFirst + 2, cfg.mixPc ? " + PC audio" : "", cfg.outFirst + 1, cfg.outFirst + 2,
+           bufSize, rate, inLatency, outLatency, g_status.latencyMs);
     return "";
 }
 
@@ -230,7 +258,7 @@ void audioSetConfig(const AudioConfig& cfg) {
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (cfg.driver == g_cfg.driver && cfg.inFirst == g_cfg.inFirst && cfg.outFirst == g_cfg.outFirst &&
-            cfg.bufSize == g_cfg.bufSize)
+            cfg.bufSize == g_cfg.bufSize && cfg.mixPc == g_cfg.mixPc)
             return;
         g_cfg = cfg;
     }

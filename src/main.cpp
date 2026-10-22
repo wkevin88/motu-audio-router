@@ -13,6 +13,7 @@ enum : UINT {
     ID_OUTPUT = 200,  // + pair index
     ID_BUFFER = 300,  // + index into kBufferSizes
     ID_MUTE = 400,
+    ID_MIXPC,
     ID_PANEL,
     ID_LOG,
     ID_STARTUP,
@@ -34,9 +35,9 @@ static void statusText(wchar_t* out, size_t len) {
         swprintf(out, len, L"Waiting for %hs...", g_cfg.driver.c_str());
         return;
     }
-    swprintf(out, len, L"In %ld-%ld → Out %ld-%ld · %ld samples · %.1f ms%s", g_cfg.inFirst + 1,
-             g_cfg.inFirst + 2, g_cfg.outFirst + 1, g_cfg.outFirst + 2, st.bufSize, st.latencyMs,
-             g_mute ? L" · muted" : L"");
+    swprintf(out, len, L"In %ld-%ld%s → Out %ld-%ld · %ld samples · %.1f ms%s", g_cfg.inFirst + 1,
+             g_cfg.inFirst + 2, g_cfg.mixPc && mixPcAllowed(g_cfg) ? L" + PC" : L"", g_cfg.outFirst + 1, g_cfg.outFirst + 2, st.bufSize,
+             st.latencyMs, g_mute ? L" · muted" : L"");
 }
 
 static void updateTooltip() {
@@ -78,6 +79,8 @@ static void showMenu(HWND hwnd) {
         AppendMenuW(buffers, MF_STRING | (kBufferSizes[i] == g_cfg.bufSize ? MF_CHECKED : 0), ID_BUFFER + i, text);
     }
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)buffers, L"Buffer size");
+    AppendMenuW(menu, MF_STRING | (g_cfg.mixPc ? MF_CHECKED : 0) | (mixPcAllowed(g_cfg) ? 0 : MF_GRAYED), ID_MIXPC,
+                mixPcAllowed(g_cfg) ? L"Mix in PC audio" : L"Mix in PC audio (not on Out 1-2)");
     AppendMenuW(menu, MF_STRING | (g_mute ? MF_CHECKED : 0), ID_MUTE, L"Mute");
     AppendMenuW(menu, MF_STRING, ID_PANEL, L"Open driver settings");
     AppendMenuW(menu, MF_STRING, ID_LOG, L"Open log");
@@ -100,6 +103,7 @@ static void onCommand(HWND hwnd, UINT id) {
     if (id >= ID_INPUT && id < ID_INPUT + 8) g_cfg.inFirst = (id - ID_INPUT) * 2;
     else if (id >= ID_OUTPUT && id < ID_OUTPUT + 8) g_cfg.outFirst = (id - ID_OUTPUT) * 2;
     else if (id >= ID_BUFFER && id < ID_BUFFER + _countof(kBufferSizes)) g_cfg.bufSize = kBufferSizes[id - ID_BUFFER];
+    else if (id == ID_MIXPC) g_cfg.mixPc = !g_cfg.mixPc;
     else if (id == ID_MUTE) audioSetMute(g_mute = !g_mute);
     else if (id == ID_PANEL) audioOpenControlPanel();
     else if (id == ID_LOG) logShow();
@@ -133,8 +137,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     configLoad(g_cfg, g_mute);
     audioSetMute(g_mute);
     if (startupEnabled()) startupSet(true);  // keep the Run entry pointing at this exe if it moved
-    appLog("started: in %ld-%ld -> out %ld-%ld, buffer %ld%s", g_cfg.inFirst + 1, g_cfg.inFirst + 2,
-           g_cfg.outFirst + 1, g_cfg.outFirst + 2, g_cfg.bufSize, g_mute ? ", muted" : "");
+    appLog("started: in %ld-%ld%s -> out %ld-%ld, buffer %ld%s", g_cfg.inFirst + 1, g_cfg.inFirst + 2,
+           g_cfg.mixPc ? " + PC audio" : "", g_cfg.outFirst + 1, g_cfg.outFirst + 2, g_cfg.bufSize,
+           g_mute ? ", muted" : "");
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = wndProc;

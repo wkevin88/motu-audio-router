@@ -12,6 +12,7 @@ The M4's hardware direct monitoring only sends inputs to outputs 1-2. This app a
 
 - The app talks to the MOTU M Series ASIO driver directly. It only opens the channels it routes, so Windows audio on Out 1-2 keeps working alongside it.
 - On every audio callback it copies the selected input pair to the selected output pair (or writes silence when muted). It does nothing else on the audio thread: no allocation, locks or logging.
+- With "Mix in PC audio" on, it also opens the M4's Loopback 1-2 inputs, which carry what Windows is playing. It adds them to the routed input, limiting the sum so loud peaks clip cleanly instead of distorting.
 - Direct monitoring to Out 1-2 is untouched and stays zero-latency in hardware.
 - A background thread owns the driver and keeps it running. It re-opens the driver after:
   - a driver reset request, which the M4 sends on unplug and some setting changes
@@ -30,13 +31,14 @@ Run `motu-audio-router.exe`. A speaker icon appears in the system tray. Hover ov
 | Input | In 1-2 or In 3-4 |
 | Output | Out 1-2 or Out 3-4 |
 | Buffer size | 16, 32, 64, 128 or 256 samples (see below) |
+| Mix in PC audio | Also plays the PC's audio (what Windows plays on Out 1-2) on the routed output |
 | Mute | Silences the routed output instantly |
 | Open driver settings | Opens the MOTU control panel (use it to change the sample rate) |
 | Open log | Opens `log.txt` in your default text editor |
 | Start with Windows | Launches the app when you sign in |
 | Quit | Stops routing and exits |
 
-Changing the input, output or buffer size re-opens the driver, which causes a gap of about 60 ms on the routed output only.
+Changing the input, output, buffer size or PC audio mixing re-opens the driver, which causes a gap of about 60 ms on the routed output only.
 
 ### Choosing a buffer size
 
@@ -56,7 +58,7 @@ About 2.6 ms of that is fixed USB and converter latency, so going below 32 gains
 
 Both live in `%APPDATA%\motu-audio-router\`:
 
-- `config.ini` holds the driver name, routing, buffer size and mute. It's saved on every menu change. Channel numbers are 0-based, so `inFirst=2` means In 3-4.
+- `config.ini` holds the driver name, routing, buffer size, PC audio mixing and mute. It's saved on every menu change. Channel numbers are 0-based, so `inFirst=2` means In 3-4.
 - `log.txt` records startup, each driver open with its reported latency, re-opens and errors. The previous session's log is kept as `log.old.txt`.
 
 "Start with Windows" adds an entry for the app to your Windows sign-in startup list (the `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` registry key). Windows staggers those apps, so with many of them the router can take a minute or two to appear after you sign in.
@@ -97,7 +99,9 @@ build\Release\spike.exe [seconds=20] [bufSize=driver default] [inFirst=2] [outFi
 
 - Supports one device only: the M4 is both input and output. There's no routing between different devices.
 - Supports one route at a time.
-- The only volume control is mute; there's no gain.
+- The only volume control is mute; there's no gain, including no separate volume for PC audio when mixing.
+- PC audio mixing assumes the M4's channel layout, where Loopback 1-2 is ASIO inputs 5-6.
+- PC audio can't be mixed into Out 1-2. Loopback 1-2 captures Out 1-2, so that would feed back into a loud squeal; the menu item is greyed out there and the app ignores the setting.
 - The sample rate is set in the MOTU control panel, not in the app.
 - Changing the buffer size can cause a short buzz on the routed output. It comes from the driver while it reconfigures; the app can't prevent it.
 
@@ -116,7 +120,7 @@ What was checked:
 - unplugging and replugging the device
 - starting at sign-in
 
-Sleep and resume, 96 kHz, long sessions at small buffer sizes and other audio interfaces have not been tested. The latency figures above are what the driver reports, not measured values.
+Mixing in PC audio has only been checked to start correctly, not listened to. Sleep and resume, 96 kHz, long sessions at small buffer sizes and other audio interfaces have not been tested. The latency figures above are what the driver reports, not measured values.
 
 The app is provided as is, with no warranty. It sends audio straight to your outputs, so start with your speaker or headphone volume low.
 

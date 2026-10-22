@@ -7,7 +7,11 @@ struct AudioConfig {
     long inFirst = 2;   // 0-based first channel of the input pair (2 = In 3-4)
     long outFirst = 2;  // 0-based first channel of the output pair (2 = Out 3-4)
     long bufSize = 32;  // requested ASIO buffer size in samples
+    bool mixPc = false; // also mix the PC's playback (M4 Loopback 1-2) into the output pair
 };
+
+// Loopback 1-2 captures Out 1-2, so mixing it back into Out 1-2 is a feedback loop (a loud squeal).
+inline bool mixPcAllowed(const AudioConfig& cfg) { return cfg.outFirst != 0; }
 
 struct AudioStatus {
     bool running = false;

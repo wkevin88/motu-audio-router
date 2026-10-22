@@ -55,6 +55,7 @@ void configLoad(AudioConfig& cfg, bool& mute) {
     cfg.inFirst = GetPrivateProfileIntW(L"audio", L"inFirst", cfg.inFirst, ini.c_str());
     cfg.outFirst = GetPrivateProfileIntW(L"audio", L"outFirst", cfg.outFirst, ini.c_str());
     cfg.bufSize = GetPrivateProfileIntW(L"audio", L"bufSize", cfg.bufSize, ini.c_str());
+    cfg.mixPc = GetPrivateProfileIntW(L"audio", L"mixPc", cfg.mixPc, ini.c_str()) != 0;
     mute = GetPrivateProfileIntW(L"audio", L"mute", mute, ini.c_str()) != 0;
 }
 
@@ -66,5 +67,6 @@ void configSave(const AudioConfig& cfg, bool mute) {
     WritePrivateProfileStringW(L"audio", L"inFirst", std::to_wstring(cfg.inFirst).c_str(), ini.c_str());
     WritePrivateProfileStringW(L"audio", L"outFirst", std::to_wstring(cfg.outFirst).c_str(), ini.c_str());
     WritePrivateProfileStringW(L"audio", L"bufSize", std::to_wstring(cfg.bufSize).c_str(), ini.c_str());
+    WritePrivateProfileStringW(L"audio", L"mixPc", cfg.mixPc ? L"1" : L"0", ini.c_str());
     WritePrivateProfileStringW(L"audio", L"mute", mute ? L"1" : L"0", ini.c_str());
 }
